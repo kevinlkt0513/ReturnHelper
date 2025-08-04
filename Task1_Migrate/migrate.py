@@ -5,6 +5,7 @@
 ReturnHelper incremental migration tool with multi-environment config support.
 Supports: full sync, incremental sync, correction, breakpoint resume, status view, breakpoint reset.
 Configuration is loaded per environment from separate .env files.
+Connect methods vary per environment (e.g. AWS credentials vs IAM roles).
 """
 
 import os
@@ -22,14 +23,10 @@ from dotenv import load_dotenv
 
 # ======================= Load multi-environment .env files ==========================
 
-# Default environment
 ENV = os.getenv("ENVIRONMENT", "dev").lower()
 
-# Load base .env file (optional)
-load_dotenv()
-
-# Load environment specific .env file to override base config
-load_dotenv(f".env.{ENV}", override=True)
+load_dotenv()  # Load base .env file (optional)
+load_dotenv(f".env.{ENV}", override=True)  # Load env-specific .env file
 
 
 # ======================= Configuration from environment variables ====================
@@ -43,11 +40,11 @@ MYSQL = {
 }
 
 DYNAMODB = {
-    "endpoint_url": os.getenv("DYNAMODB_ENDPOINT_URL"),
+    "endpoint_url": os.getenv("DYNAMODB_ENDPOINT_URL", None),
     "region_name": os.getenv("DYNAMODB_REGION_NAME"),
     "table": os.getenv("DYNAMODB_TABLE"),
-    "access_key": os.getenv("DYNAMODB_ACCESS_KEY"),
-    "secret_key": os.getenv("DYNAMODB_SECRET_KEY"),
+    "access_key": os.getenv("DYNAMODB_ACCESS_KEY", None),
+    "secret_key": os.getenv("DYNAMODB_SECRET_KEY", None),
 }
 
 MONGO = {
@@ -91,22 +88,29 @@ logger = logging.getLogger("migrate")
 mysql_conn = mysql.connector.connect(**MYSQL)
 mysql_cursor = mysql_conn.cursor(dictionary=True)
 
-dynamodb = boto3.resource(
-    "dynamodb",
-    endpoint_url=DYNAMODB["endpoint_url"],
-    region_name=DYNAMODB["region_name"],
-    aws_access_key_id=DYNAMODB["access_key"],
-    aws_secret_access_key=DYNAMODB["secret_key"]
-)
+
+# DynamoDB connection handling differs per environment:
+# If access_key and secret_key provided (e.g. dev), use explicit creds and endpoint_url;
+# Otherwise (e.g. uat or prod), rely on IAM role and region_name only.
+dynamodb_args = {"region_name": DYNAMODB["region_name"]}
+if DYNAMODB["endpoint_url"]:
+    dynamodb_args["endpoint_url"] = DYNAMODB["endpoint_url"]
+if DYNAMODB["access_key"] and DYNAMODB["secret_key"]:
+    dynamodb_args["aws_access_key_id"] = DYNAMODB["access_key"]
+    dynamodb_args["aws_secret_access_key"] = DYNAMODB["secret_key"]
+
+dynamodb = boto3.resource("dynamodb", **dynamodb_args)
 dynamo_table = dynamodb.Table(DYNAMODB["table"])
 
+
+# MongoDB initialization
 mongo = MongoClient(MONGO["uri"])
 mongo_db = mongo[MONGO["db"]]
 tx_col = mongo_db[MONGO["transactions"]]
 tx_col.create_index("apiTransactionId", unique=True)
 tx_col.create_index("createOn")
 
-# Dynamically create references to all buckets collections
+# Dynamically create references to all bucket collections
 bucket_collections = {}
 for ttype, (_, bucket_name) in TRANSACTION_TYPE_KEY_AND_BUCKET.items():
     bucket_collections[bucket_name] = mongo_db[bucket_name]
@@ -207,7 +211,7 @@ def transform_data(mysql_row, dy_meta, buckets_map):
             key, bucket_collection_name = TRANSACTION_TYPE_KEY_AND_BUCKET[txn_type]
             if key in dy_meta and isinstance(dy_meta[key], list) and len(dy_meta[key]) > 0:
                 val_list = dy_meta[key]
-                chunks = [val_list[i:i+BUCKET_SIZE] for i in range(0, len(val_list), BUCKET_SIZE)]
+                chunks = [val_list[i:i + BUCKET_SIZE] for i in range(0, len(val_list), BUCKET_SIZE)]
                 for c in chunks:
                     bucket_doc = {
                         "parentTransactionNumber": tid,
