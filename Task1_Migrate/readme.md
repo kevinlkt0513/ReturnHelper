@@ -1,6 +1,8 @@
+
 # UAT environment templete
 .env.dev/.env.uat/.env.prod
 
+```
 # MySQL
 MYSQL_HOST=xxxx
 MYSQL_PORT=xxxx
