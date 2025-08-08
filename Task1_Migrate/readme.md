@@ -1,5 +1,5 @@
 
-# UAT environment templete
+# DEV/UAT/PROD environment templete
 .env.dev/.env.uat/.env.prod
 
 ```
